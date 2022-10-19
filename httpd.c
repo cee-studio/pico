@@ -10,8 +10,9 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
-#define MAX_CONNECTIONS 1000
+#define MAX_CONNECTIONS 1024
 #define BUF_SIZE 65535
 #define QUEUE_SIZE 1000000
 
@@ -37,8 +38,14 @@ void serve_forever(const char *PORT) {
 
   int slot = 0;
 
-  printf("Server started %shttp://127.0.0.1:%s%s\n", "\033[92m", PORT,
-         "\033[0m");
+  const char *http_protocol = getenv("HTTP_PROTOCOL");
+  const char *http_domain = getenv("HTTP_DOMAIN");
+
+  if( http_domain && http_protocol )
+    printf("Server started\n%s%s://%s.%s%s\n",
+           "\033[92m", http_protocol, PORT, http_domain, "\033[0m");
+  else
+    printf("Server started\n%shttp://127.0.0.1:%s%s\n", "\033[92m", PORT, "\033[0m");
 
   // create shared memory for client slot array
   clients = mmap(NULL, sizeof(*clients) * MAX_CONNECTIONS,
@@ -131,6 +138,7 @@ header_t *request_headers(void) { return reqhdr; }
 
 // Handle escape characters (%xx)
 static void uri_unescape(char *uri) {
+  if( uri == NULL ) return;
   char chr = 0;
   char *src = uri;
   char *dst = uri;
@@ -164,19 +172,27 @@ void respond(int slot) {
   buf = malloc(BUF_SIZE);
   rcvd = recv(clients[slot], buf, BUF_SIZE, 0);
 
-  if (rcvd < 0) // receive error
+  if( rcvd < 0 ) // receive error
     fprintf(stderr, ("recv() error\n"));
-  else if (rcvd == 0) // receive socket closed
+  else if( rcvd == 0 ) // receive socket closed
     fprintf(stderr, "Client disconnected upexpectedly.\n");
-  else // message received
-  {
+  else{
     buf[rcvd] = '\0';
+    if( debug_httpd ){
+      fprintf(stderr, "received %d bytes\n", rcvd);
+      fprintf(stderr, "%s\n", buf);
+    }
 
     method = strtok(buf, " \t\r\n");
     uri = strtok(NULL, " \t");
     prot = strtok(NULL, " \t\r\n");
 
     uri_unescape(uri);
+    if( uri == NULL || method == NULL ){
+      fprintf(stderr, "receiving payload error\n");
+      free(buf);
+      return;
+    }
 
     fprintf(stderr, "\x1b[32m + [%s] %s\x1b[0m\n", method, uri);
 
@@ -189,16 +205,16 @@ void respond(int slot) {
 
     header_t *h = reqhdr;
     char *t, *t2;
-    while (h < reqhdr + 16) {
+    while( h < reqhdr + HEADER_MAX ){
       char *key, *val;
 
       key = strtok(NULL, "\r\n: \t");
-      if (!key)
-        break;
+      if( !key ) break;
 
       val = strtok(NULL, "\r\n");
-      while (*val && *val == ' ')
-        val++;
+      if( val )
+        while( *val && *val == ' ' )
+          val++;
 
       h->name = key;
       h->value = val;
@@ -229,3 +245,35 @@ void respond(int slot) {
 
   free(buf);
 }
+
+
+#define CHUNK_SIZE 1024 // read 1024 bytes at a time
+
+int does_file_exist(const char *file_name) {
+  struct stat buffer;
+  int exists;
+
+  exists = (stat(file_name, &buffer) == 0);
+
+  return exists;
+}
+
+int read_file(const char *file_name) {
+  char buf[CHUNK_SIZE];
+  FILE *file;
+  size_t nread;
+  int err = 1;
+
+  file = fopen(file_name, "r");
+
+  if( file ){
+    while ((nread = fread(buf, 1, sizeof buf, file)) > 0)
+      fwrite(buf, 1, nread, stdout);
+
+    err = ferror(file);
+    fclose(file);
+  }
+  return err;
+}
+
+int debug_httpd = 0;
