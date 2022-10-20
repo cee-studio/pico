@@ -1,17 +1,10 @@
 #ifndef _HTTPD_H___
 #define _HTTPD_H___
 
+#include "picohttpparser.h"
 #include <stdio.h>
 #include <string.h>
 
-// Client request
-extern char *method, // "GET" or "POST"
-    *uri,            // "/index.html" things before '?'
-    *qs,             // "a=1&b=2" things after  '?'
-    *prot,           // "HTTP/1.1"
-    *payload;        // for POST
-
-extern int payload_size;
 
 // Server control functions
 void serve_forever(const char *PORT);
@@ -52,4 +45,21 @@ extern int does_file_exist(const char *file_name);
 extern int read_file(const char *file_name);
 
 extern int debug_httpd;
+
+
+struct sized_buffer {
+  size_t size;
+  char *start;
+};
+
+struct request_info {
+  int pret;
+  char *buf;
+  int minor_version;
+  struct phr_header headers[100];
+  struct sized_buffer method, uri, payload;
+  size_t buflen, prevbuflen, num_headers;
+};
+
+extern  struct request_info req_info;
 #endif

@@ -6,7 +6,7 @@ int main(int c, char **argv){
 }
 
 void route(){
-  if( strcmp("/", uri) == 0 ){
+  if( strncmp("/", req_info.uri.start, req_info.uri.size) == 0 ){
     printf("HTTP/1.1 200 OK\n");
     printf("Access-Control-Allow-Origin: *\n");
     //printf("Content-Length: %d\n", strlen(resp));
@@ -14,7 +14,7 @@ void route(){
 
     read_file("index.html");
   }else{
-    char *file = uri + 1;
+    char *file = req_info.uri.start + 1;
     if( does_file_exist(file) ){
       printf("HTTP/1.1 200 OK\n");
       printf("Access-Control-Allow-Origin: *\n");

@@ -1,4 +1,5 @@
 #include "httpd.h"
+#include "picohttpparser.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -11,26 +12,19 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 #define MAX_CONNECTIONS 1024
-#define BUF_SIZE 65535
-#define QUEUE_SIZE 1000000
+#define BUF_SIZE (64*1024)
+#define QUEUE_SIZE (1024*1024)
 
 static int listenfd;
 int *clients;
 static void start_server(const char *);
 static void respond(int);
 
-static char *buf;
 
-// Client request
-char *method, // "GET" or "POST"
-    *uri,     // "/index.html" things before '?'
-    *qs,      // "a=1&b=2" things after  '?'
-    *prot,    // "HTTP/1.1"
-    *payload; // for POST
-
-int payload_size;
+struct request_info req_info = {0};
 
 void serve_forever(const char *PORT) {
   struct sockaddr_in clientaddr;
@@ -53,7 +47,7 @@ void serve_forever(const char *PORT) {
 
   // Setting all elements to -1: signifies there is no client connected
   int i;
-  for (i = 0; i < MAX_CONNECTIONS; i++)
+  for( i = 0; i < MAX_CONNECTIONS; i++ )
     clients[i] = -1;
   start_server(PORT);
 
@@ -61,26 +55,26 @@ void serve_forever(const char *PORT) {
   signal(SIGCHLD, SIG_IGN);
 
   // ACCEPT connections
-  while (1) {
+  while( 1 ){
     addrlen = sizeof(clientaddr);
     clients[slot] = accept(listenfd, (struct sockaddr *)&clientaddr, &addrlen);
 
-    if (clients[slot] < 0) {
+    if( clients[slot] < 0 ){
       perror("accept() error");
       exit(1);
-    } else {
-      if (fork() == 0) {
+    }else{
+      if( fork() == 0 ){
         close(listenfd);
         respond(slot);
         close(clients[slot]);
         clients[slot] = -1;
         exit(0);
-      } else {
+      }else{
         close(clients[slot]);
       }
     }
 
-    while (clients[slot] != -1)
+    while( clients[slot] != -1 )
       slot = (slot + 1) % MAX_CONNECTIONS;
   }
 }
@@ -94,21 +88,21 @@ void start_server(const char *port) {
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_flags = AI_PASSIVE;
-  if (getaddrinfo(NULL, port, &hints, &res) != 0) {
+  if( getaddrinfo(NULL, port, &hints, &res) != 0 ){
     perror("getaddrinfo() error");
     exit(1);
   }
   // socket and bind
-  for (p = res; p != NULL; p = p->ai_next) {
+  for( p = res; p != NULL; p = p->ai_next ){
     int option = 1;
     listenfd = socket(p->ai_family, p->ai_socktype, 0);
     setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
-    if (listenfd == -1)
+    if( listenfd == -1 )
       continue;
-    if (bind(listenfd, p->ai_addr, p->ai_addrlen) == 0)
+    if( bind(listenfd, p->ai_addr, p->ai_addrlen) == 0 )
       break;
   }
-  if (p == NULL) {
+  if( p == NULL ){
     perror("socket() or bind()");
     exit(1);
   }
@@ -116,48 +110,35 @@ void start_server(const char *port) {
   freeaddrinfo(res);
 
   // listen for incoming connections
-  if (listen(listenfd, QUEUE_SIZE) != 0) {
+  if( listen(listenfd, QUEUE_SIZE) != 0 ){
     perror("listen() error");
     exit(1);
   }
 }
 
-// get request header by name
-char *request_header(const char *name) {
-  header_t *h = reqhdr;
-  while (h->name) {
-    if (strcmp(h->name, name) == 0)
-      return h->value;
-    h++;
-  }
-  return NULL;
-}
-
-// get all request headers
-header_t *request_headers(void) { return reqhdr; }
-
-// Handle escape characters (%xx)
-static void uri_unescape(char *uri) {
-  if( uri == NULL ) return;
+static void uri_unescape(struct sized_buffer *sb){
   char chr = 0;
-  char *src = uri;
-  char *dst = uri;
+  char *src = sb->start;
+  char *dst = sb->start;
 
   // Skip inital non encoded character
-  while (*src && !isspace((int)(*src)) && (*src != '%'))
+  while( *src
+         && !isspace((int)(*src))
+         && (*src != '%')
+         && src - sb->start < sb->size )
     src++;
 
   // Replace encoded characters with corresponding code.
   dst = src;
-  while (*src && !isspace((int)(*src))) {
-    if (*src == '+')
+  while( *src && !isspace((int)(*src)) && src - sb->start < sb->size ){
+    if( *src == '+' )
       chr = ' ';
-    else if ((*src == '%') && src[1] && src[2]) {
+    else if( (*src == '%') && src[1] && src[2] ){
       src++;
       chr = ((*src & 0x0F) + 9 * (*src > '9')) * 16;
       src++;
       chr += ((*src & 0x0F) + 9 * (*src > '9'));
-    } else
+    }else
       chr = *src;
     *dst++ = chr;
     src++;
@@ -167,83 +148,79 @@ static void uri_unescape(char *uri) {
 
 // client connection
 void respond(int slot) {
-  int rcvd;
+  printf("response %d\n", slot);
+  ssize_t rret;
+  int sock = clients[slot];
+  char *buf = calloc(BUF_SIZE, 1);
+  req_info.buf = buf;
+  req_info.num_headers = sizeof (req_info.headers) / sizeof (req_info.headers[0]);
 
-  buf = malloc(BUF_SIZE);
-  rcvd = recv(clients[slot], buf, BUF_SIZE, 0);
-
-  if( rcvd < 0 ) // receive error
-    fprintf(stderr, ("recv() error\n"));
-  else if( rcvd == 0 ) // receive socket closed
-    fprintf(stderr, "Client disconnected upexpectedly.\n");
-  else{
-    buf[rcvd] = '\0';
-    if( debug_httpd ){
-      fprintf(stderr, "received %d bytes\n", rcvd);
-      fprintf(stderr, "%s\n", buf);
+  //int pret;
+  while( 1 ){
+    while( (rret = recv(sock, buf + req_info.buflen, BUF_SIZE - req_info.buflen, 0)) == -1
+           && errno == EINTR ) /* repeat */;
+    if( rret <= 0 ) {
+      printf("read error");
+      return; // error
     }
 
-    method = strtok(buf, " \t\r\n");
-    uri = strtok(NULL, " \t");
-    prot = strtok(NULL, " \t\r\n");
+    req_info.prevbuflen = req_info.buflen;
+    req_info.buflen += rret;
 
-    uri_unescape(uri);
-    if( uri == NULL || method == NULL ){
-      fprintf(stderr, "receiving payload error\n");
-      free(buf);
-      return;
+    req_info.pret = phr_parse_request(buf,
+                                      req_info.buflen,
+                                      &req_info.method.start,
+                                      &req_info.method.size,
+                                      &req_info.uri.start,
+                                      &req_info.uri.size,
+                                      &req_info.minor_version,
+                                      req_info.headers,
+                                      &req_info.num_headers,
+                                      req_info.prevbuflen);
+    if( req_info.pret > 0 ){
+      req_info.payload.start = buf + req_info.pret;
+      req_info.payload.size = req_info.buflen - req_info.pret;
+      break;
+    }else if( req_info.pret == -1 ){
+      printf("parsing error\n");
+      return; // parsing error
+    }else if( req_info.pret == -2 ){ // incomplete request
+      if( req_info.buflen == BUF_SIZE ){
+        printf("request is too long\n");
+        return; // Request is too long
+      }
     }
-
-    fprintf(stderr, "\x1b[32m + [%s] %s\x1b[0m\n", method, uri);
-
-    qs = strchr(uri, '?');
-
-    if (qs)
-      *qs++ = '\0'; // split URI
-    else
-      qs = uri - 1; // use an empty string
-
-    header_t *h = reqhdr;
-    char *t, *t2;
-    while( h < reqhdr + HEADER_MAX ){
-      char *key, *val;
-
-      key = strtok(NULL, "\r\n: \t");
-      if( !key ) break;
-
-      val = strtok(NULL, "\r\n");
-      if( val )
-        while( *val && *val == ' ' )
-          val++;
-
-      h->name = key;
-      h->value = val;
-      h++;
-      fprintf(stderr, "[H] %s: %s\n", key, val);
-      t = val + 1 + strlen(val);
-      if (t[1] == '\r' && t[2] == '\n')
-        break;
-    }
-    t = strtok(NULL, "\r\n");
-    t2 = request_header("Content-Length"); // and the related header if there is
-    payload = t;
-    payload_size = t2 ? atol(t2) : (rcvd - (t - buf));
-
-    // bind clientfd to stdout, making it easier to write
-    int clientfd = clients[slot];
-    dup2(clientfd, STDOUT_FILENO);
-    close(clientfd);
-
-    // call router
-    route();
-
-    // tidy up
-    fflush(stdout);
-    shutdown(STDOUT_FILENO, SHUT_WR);
-    close(STDOUT_FILENO);
   }
 
-  free(buf);
+  uri_unescape(&req_info.uri);
+  printf("parsing request is %d bytes long\n", req_info.pret);
+  printf("the whole request is %d bytes long\n", req_info.buflen);
+  printf("method is %.*s\n", (int)req_info.method.size, req_info.method.start);
+  printf("path is %.*s\n", (int)req_info.uri.size, req_info.uri.start);
+  printf("HTTP version is 1.%d\n", req_info.minor_version);
+  printf("headers:\n");
+  for( int i = 0; i != req_info.num_headers; ++i ){
+    printf("%.*s: %.*s\n", (int)req_info.headers[i].name_len,
+           req_info.headers[i].name,
+           (int)req_info.headers[i].value_len,
+           req_info.headers[i].value);
+  }
+  printf("body:%.*s", req_info.payload.size, req_info.payload.start);
+  fflush(stdout);
+
+  // bind clientfd to stdout, making it easier to write
+  int clientfd = clients[slot];
+  dup2(clientfd, STDOUT_FILENO);
+  close(clientfd);
+
+  // call router
+  route();
+
+  // tidy up
+  fflush(stdout);
+  shutdown(STDOUT_FILENO, SHUT_WR);
+  close(STDOUT_FILENO);
+  //free(buf);
 }
 
 
