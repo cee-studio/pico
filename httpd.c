@@ -57,7 +57,6 @@ void serve_forever(const char *PORT) {
   // Ignore SIGCHLD to avoid zombie threads
   signal(SIGCHLD, SIG_IGN);
 
-  int test = 1;
   // ACCEPT connections
   while( 1 ){
     addrlen = sizeof(clientaddr);
@@ -66,8 +65,11 @@ void serve_forever(const char *PORT) {
     if( clients[slot] < 0 ){
       perror("accept() error");
       exit(1);
-    }else if( test ) {
+    }else if( debug_httpd ) {
+      //close(listenfd);
       respond(slot);
+      close(clients[slot]);
+      clients[slot] = -1;
     }else{
       if( fork() == 0 ){
         close(listenfd);
@@ -219,11 +221,12 @@ void respond(int slot){
   route();
   fflush(stderr);
   fflush(stdout);
+  free(res_info.sb.start);
+  free(req_info.buf);
 }
 
 
 int debug_httpd = 0;
-
 #define res_buf_size(res)   (res->sb.size - (res->end_of_data - res->sb.start))
 
 void add_header(struct response_info *res, char *name, char *value_fmt, ...){
