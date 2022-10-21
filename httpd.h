@@ -4,6 +4,7 @@
 #include "picohttpparser.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 
 // Server control functions
@@ -68,4 +69,12 @@ extern void terminate_headers(struct response_info *res);
 extern void set_http_code(struct response_info *res, int code);
 extern void send_response_binary(struct response_info *res, char *data, size_t data_len);
 extern void send_response(struct response_info *res, char *text);
+
+typedef ssize_t (*sg_read_cb)(void *handle, uint64_t offset, char *buf,
+                              size_t size);
+typedef void (*sg_free_cb)(void *handle);
+
+extern void send_sse_stream(struct response_info *res,
+                            sg_read_cb read_db, void *handle,
+                            sg_free_cb free_cb);
 #endif

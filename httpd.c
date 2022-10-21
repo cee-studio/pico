@@ -277,3 +277,18 @@ void send_response_binary(struct response_info *res, char *data, size_t data_len
 void send_response(struct response_info *res, char *text){
   send_response_binary(res, text, strlen(text));
 }
+
+void send_sse_stream(struct response_info *res,
+                     sg_read_cb read_db, void *handle,
+                     sg_free_cb free_cb){
+  add_header(res, "Content-Type", "text/event-stream");
+  terminate_headers(res);
+  int ret = send(res->socket, res->sb.start, res->end_of_data - res->sb.start, 0);
+  if( ret == - 1){
+    perror("send");
+  }
+  ssize_t read_size = 0;
+  while( (read_size = read_db(handle, 0, res->sb.start, res->sb.size)) > 0 ){
+    ret = send(res->socket, res->sb.start, read_size, 0);
+  }
+}
