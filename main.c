@@ -6,23 +6,8 @@ int main(int c, char **argv){
 }
 
 void route(){
-  if( strncmp("/", req_info.uri.start, req_info.uri.size) == 0 ){
-    printf("HTTP/1.1 200 OK\n");
-    printf("Access-Control-Allow-Origin: *\n");
-    //printf("Content-Length: %d\n", strlen(resp));
-    printf("Cache-Control: no-cache\n\n");
-
-    read_file("index.html");
-  }else{
-    char *file = req_info.uri.start + 1;
-    if( does_file_exist(file) ){
-      printf("HTTP/1.1 200 OK\n");
-      printf("Access-Control-Allow-Origin: *\n");
-      //printf("Content-Length: %d\n", strlen(resp));
-      printf("Cache-Control: no-cache\n\n");
-      read_file(file);
-    }else{
-      printf("HTTP/1.1 404 Not found\n\n");
-    }
-  }
+  set_http_code(&res_info, 200);
+  add_header(&res_info, "Access-Control-Allow-Origin", "*");
+  add_header(&res_info, "Cache-Control", "no-cache");
+  send_response(&res_info, "Ok");
 }

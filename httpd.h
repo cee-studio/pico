@@ -9,14 +9,6 @@
 // Server control functions
 void serve_forever(const char *PORT);
 
-char *request_header(const char *name);
-
-#define HEADER_MAX 32
-typedef struct {
-  char *name, *value;
-} header_t;
-static header_t reqhdr[HEADER_MAX + 1] = {{"\0", "\0"}};
-header_t *request_headers(void);
 
 // user shall implement this function
 void route();
@@ -56,10 +48,24 @@ struct request_info {
   int pret;
   char *buf;
   int minor_version;
-  struct phr_header headers[100];
+  struct phr_header headers[128];
   struct sized_buffer method, uri, payload;
   size_t buflen, prevbuflen, num_headers;
 };
 
-extern  struct request_info req_info;
+struct response_info {
+  int socket;
+  struct sized_buffer sb;
+  char * end_of_data;
+  struct phr_header headers[128];
+};
+
+extern struct request_info req_info;
+extern struct response_info res_info;
+
+extern void add_header(struct response_info *res, char *name, char *fmt, ...);
+extern void terminate_headers(struct response_info *res);
+extern void set_http_code(struct response_info *res, int code);
+extern void send_response_binary(struct response_info *res, char *data, size_t data_len);
+extern void send_response(struct response_info *res, char *text);
 #endif

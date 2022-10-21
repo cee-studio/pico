@@ -1,6 +1,8 @@
 #include "httpd.h"
 #include "picohttpparser.h"
+#include "HttpStatusCodes_C.h"
 
+#include <stdarg.h>
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <netdb.h>
@@ -15,7 +17,7 @@
 #include <errno.h>
 
 #define MAX_CONNECTIONS 1024
-#define BUF_SIZE (64*1024)
+#define BUF_SIZE (64*10*1024)
 #define QUEUE_SIZE (1024*1024)
 
 static int listenfd;
@@ -24,7 +26,8 @@ static void start_server(const char *);
 static void respond(int);
 
 
-struct request_info req_info = {0};
+struct request_info req_info = {};
+struct response_info res_info = {};
 
 void serve_forever(const char *PORT) {
   struct sockaddr_in clientaddr;
@@ -119,10 +122,10 @@ void start_server(const char *port) {
   }
 }
 
+/* unescape this in place */
 static void uri_unescape(struct sized_buffer *sb){
   char chr = 0;
-  char *src = sb->start;
-  char *dst = sb->start;
+  char *src = sb->start, *dst;
 
   // Skip inital non encoded character
   while( *src
@@ -153,11 +156,16 @@ static void uri_unescape(struct sized_buffer *sb){
 void respond(int slot){
   ssize_t rret;
   int sock = clients[slot];
-  char *buf = calloc(BUF_SIZE, 1);
+  char *buf = malloc(BUF_SIZE);
+  memset(&req_info, 0, sizeof(req_info));
   req_info.buf = buf;
   req_info.num_headers = sizeof (req_info.headers) / sizeof (req_info.headers[0]);
 
-  //int pret;
+  memset(&res_info, 0, sizeof(res_info));
+  res_info.sb.start = malloc(BUF_SIZE);
+  res_info.sb.size = BUF_SIZE;
+  res_info.socket = sock;
+
   while( 1 ){
     while( (rret = recv(sock, buf + req_info.buflen, BUF_SIZE - req_info.buflen, 0)) == -1
            && errno == EINTR ) /* repeat */;
@@ -208,51 +216,61 @@ void respond(int slot){
            req_info.headers[i].value);
   }
   printf("body:%.*s", req_info.payload.size, req_info.payload.start);
-  //fflush(stdout);
-
-  // bind clientfd to stdout, making it easier to write
-  int clientfd = clients[slot];
-  dup2(clientfd, STDOUT_FILENO);
-  close(clientfd);
-
-  // call router
   route();
-
-  // tidy up
+  fflush(stderr);
   fflush(stdout);
-  shutdown(STDOUT_FILENO, SHUT_WR);
-  close(STDOUT_FILENO);
-  //free(buf);
 }
 
-
-#define CHUNK_SIZE 1024 // read 1024 bytes at a time
-
-int does_file_exist(const char *file_name) {
-  struct stat buffer;
-  int exists;
-
-  exists = (stat(file_name, &buffer) == 0);
-
-  return exists;
-}
-
-int read_file(const char *file_name) {
-  char buf[CHUNK_SIZE];
-  FILE *file;
-  size_t nread;
-  int err = 1;
-
-  file = fopen(file_name, "r");
-
-  if( file ){
-    while ((nread = fread(buf, 1, sizeof buf, file)) > 0)
-      fwrite(buf, 1, nread, stdout);
-
-    err = ferror(file);
-    fclose(file);
-  }
-  return err;
-}
 
 int debug_httpd = 0;
+
+#define res_buf_size(res)   (res->sb.size - (res->end_of_data - res->sb.start))
+
+void add_header(struct response_info *res, char *name, char *value_fmt, ...){
+  va_list arg;
+  int i;
+  for( i = 0; res->headers[i].name_len; i++ );
+
+  res->headers[i].name = res->end_of_data;
+  res->headers[i].name_len = snprintf(res->end_of_data, res_buf_size(res), "%s: ", name);
+  res->end_of_data += res->headers[i].name_len;
+
+  res->headers[i].value = res->end_of_data;
+  va_start(arg, value_fmt);
+  res->headers[i].value_len = vsnprintf(res->end_of_data, res_buf_size(res), value_fmt, arg);
+  va_end(arg);
+  res->end_of_data += res->headers[i].value_len;
+  /* add '\n' to terminate this header */
+  res->end_of_data[0] = '\n';
+  res->end_of_data ++;
+}
+
+void terminate_headers(struct response_info *res){
+  res->end_of_data[0] = '\n';
+  res->end_of_data ++;
+}
+
+void set_http_code(struct response_info *res, int code){
+  /* this has to be the first call */
+  size_t n = snprintf(res->sb.start, res->sb.size,
+                      "HTTP/1.1 %d %s\n", code, HttpStatus_reasonPhrase(code));
+  res->end_of_data = res->sb.start + n;
+}
+
+void send_response_binary(struct response_info *res, char *data, size_t data_len){
+  add_header(res, "Content-Length", "%d", data_len);
+  terminate_headers(res);
+  res->end_of_data +=
+    snprintf(res->end_of_data, res_buf_size(res), "%.*s", data_len, data);
+
+  printf("\n%.*s", res->end_of_data - res->sb.start, res->sb.start);
+  int ret = send(res->socket, res->sb.start, res->end_of_data - res->sb.start, 0);
+  if( ret == - 1){
+    perror("send");
+  }
+  printf("\nsend %d bytes\n", ret);
+}
+
+void send_response(struct response_info *res, char *text){
+  send_response_binary(res, text, strlen(text));
+}

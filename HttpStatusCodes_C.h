@@ -205,5 +205,7 @@ static const char* HttpStatus_reasonPhrase(int code)
 
 }
 
+#define HTTP_CONTENT_TXT  "text/plain; charset=UTF-8"
+#define HTTP_CONTENT_JSON "application/json; charset=UTF-8"
 
 #endif /* HTTPSTATUSCODES_C_H_ */
