@@ -54,6 +54,7 @@ void serve_forever(const char *PORT) {
   // Ignore SIGCHLD to avoid zombie threads
   signal(SIGCHLD, SIG_IGN);
 
+  int test = 1;
   // ACCEPT connections
   while( 1 ){
     addrlen = sizeof(clientaddr);
@@ -62,6 +63,8 @@ void serve_forever(const char *PORT) {
     if( clients[slot] < 0 ){
       perror("accept() error");
       exit(1);
+    }else if( test ) {
+      respond(slot);
     }else{
       if( fork() == 0 ){
         close(listenfd);
@@ -147,8 +150,7 @@ static void uri_unescape(struct sized_buffer *sb){
 }
 
 // client connection
-void respond(int slot) {
-  printf("response %d\n", slot);
+void respond(int slot){
   ssize_t rret;
   int sock = clients[slot];
   char *buf = calloc(BUF_SIZE, 1);
@@ -206,7 +208,7 @@ void respond(int slot) {
            req_info.headers[i].value);
   }
   printf("body:%.*s", req_info.payload.size, req_info.payload.start);
-  fflush(stdout);
+  //fflush(stdout);
 
   // bind clientfd to stdout, making it easier to write
   int clientfd = clients[slot];
